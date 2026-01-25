@@ -1,0 +1,38 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+  </PropertyGroup>
+
+  <ItemGroup>
+	  <!-- Shopify Integration -->
+	  <PackageReference Include="ShopifySharp" Version="6.25.4" />
+
+	  <!-- Google Sheets API -->
+	  <PackageReference Include="Google.Apis.Sheets.v4" Version="1.68.0.3525" />
+	  <PackageReference Include="Google.Apis.Auth" Version="1.68.0" />
+
+	  <!-- LLamaSharp for Local AI -->
+	  <PackageReference Include="LLamaSharp" Version="0.25.0" />
+	  <PackageReference Include="LLamaSharp.Backend.Cpu" Version="0.25.0" />
+	  <!-- For GPU support, use this instead:
+    <PackageReference Include="LLamaSharp.Backend.Cuda12" Version="0.16.0" />
+    -->
+
+	  <!-- JSON Serialization -->
+	  <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
+
+	  <!-- HTTP Client -->
+	  <PackageReference Include="System.Net.Http" Version="4.3.4" />
+ </ItemGroup>
+
+  <ItemGroup>
+    <None Update="config.json">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+</Project>
