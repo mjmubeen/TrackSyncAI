@@ -114,16 +114,46 @@ namespace ShopifyOrderSync.Services
         private async Task<List<Order>> FetchShopifyOrdersAsync(DateTime startDate, DateTime endDate)
         {
             var service = new OrderService(_shopifyShopDomain, _shopifyPassword);
+            var allOrders = new List<Order>();
 
             var filter = new OrderListFilter
             {
                 CreatedAtMin = startDate,
                 CreatedAtMax = endDate,
-                Status = "any"
+                Status = "any",
+                Limit = 250  // Maximum allowed by Shopify API
             };
 
-            var orders = await service.ListAsync(filter);
-            return [.. orders.Items];
+            Log("Fetching orders from Shopify (paginated)...");
+
+            // Fetch first page
+            var response = await service.ListAsync(filter);
+            allOrders.AddRange(response.Items);
+            Log($"  → Page 1: {response.Items.Count()} orders");
+
+            // Check if there are more pages
+            int pageCount = 1;
+            while (response.HasNextPage)
+            {
+                pageCount++;
+                Log($"  → Fetching page {pageCount}...");
+
+                // Fetch next page using link info
+                response = await service.ListAsync(response.GetNextPageFilter());
+                allOrders.AddRange(response.Items);
+
+                Log($"  → Page {pageCount}: {response.Items.Count()} orders (Total so far: {allOrders.Count})");
+
+                // Safety limit to prevent infinite loops (adjust as needed)
+                if (pageCount > 100)
+                {
+                    Log("  ⚠️ WARNING: Reached 100 pages limit. Stopping pagination.");
+                    break;
+                }
+            }
+
+            Log($"✓ Total orders fetched: {allOrders.Count} across {pageCount} page(s)");
+            return allOrders;
         }
 
         private async Task<Dictionary<long, SheetOrderData>> GetExistingSheetDataAsync()

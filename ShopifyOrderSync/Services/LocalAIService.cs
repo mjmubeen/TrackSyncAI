@@ -97,6 +97,16 @@ namespace ShopifyOrderSync.Services
                 throw new InvalidOperationException("Model not loaded. Please load the model first.");
             }
 
+            if (_executor == null)
+            {
+                return new TrackingAnalysisResult
+                {
+                    Status = "Error",
+                    Color = "Red",
+                    ErrorMessage = "AI executor is not initialized."
+                };
+            }
+
             return await Task.Run(async () =>
             {
                 try

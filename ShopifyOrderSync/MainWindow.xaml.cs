@@ -1,8 +1,8 @@
 ﻿using Microsoft.Win32;
-using Newtonsoft.Json;
 using ShopifyOrderSync.Services;
 using System.IO;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Windows;
 using System.Windows.Threading;
 
@@ -127,7 +127,7 @@ namespace ShopifyOrderSync
                 config.ShopifyApiKey,
                 config.ShopifyPassword,
                 config.ShopifyShopDomain,
-                System.Text.Json.JsonSerializer.Serialize(config.GoogleCredentialsJson),
+                JsonSerializer.Serialize(config.GoogleCredentialsJson),
                 config.SpreadsheetId
             );
 
@@ -249,7 +249,7 @@ namespace ShopifyOrderSync
                 try
                 {
                     string json = File.ReadAllText(configPath);
-                    return Newtonsoft.Json.JsonConvert.DeserializeObject<AppConfiguration>(json);
+                    return JsonSerializer.Deserialize<AppConfiguration>(json);
                 }
                 catch
                 {
@@ -292,40 +292,41 @@ namespace ShopifyOrderSync
         public required GoogleCredentials GoogleCredentialsJson { get; set; }
         public required string SpreadsheetId { get; set; }
     }
+
     public class GoogleCredentials
     {
-        [JsonProperty("type")]
+        [JsonPropertyName("type")]
         public required string Type { get; set; }
 
-        [JsonProperty("project_id")]
+        [JsonPropertyName("project_id")]
         public required string ProjectId { get; set; }
 
-        [JsonProperty("private_key_id")]
+        [JsonPropertyName("private_key_id")]
         public required string PrivateKeyId { get; set; }
 
-        [JsonProperty("private_key")]
+        [JsonPropertyName("private_key")]
         public required string PrivateKey { get; set; }
 
-        [JsonProperty("client_email")]
+        [JsonPropertyName("client_email")]
         public required string ClientEmail { get; set; }
 
-        [JsonProperty("client_id")]
+        [JsonPropertyName("client_id")]
         public required string ClientId { get; set; }
 
-        [JsonProperty("auth_uri")]
+        [JsonPropertyName("auth_uri")]
         public required string AuthUri { get; set; }
 
-        [JsonProperty("token_uri")]
+        [JsonPropertyName("token_uri")]
         public required string TokenUri { get; set; }
 
-        [JsonProperty("auth_provider_x509_cert_url")]
+        [JsonPropertyName("auth_provider_x509_cert_url")]
         public required string AuthProviderX509CertUrl { get; set; }
 
-        [JsonProperty("client_x509_cert_url")]
+        [JsonPropertyName("client_x509_cert_url")]
         public required string ClientX509CertUrl { get; set; }
 
-        [JsonProperty("universe_domain")]
+        [JsonPropertyName("universe_domain")]
         public required string UniverseDomain { get; set; }
-
     }
+
 }
