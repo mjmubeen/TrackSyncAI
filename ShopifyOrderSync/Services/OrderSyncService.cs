@@ -158,7 +158,7 @@ namespace ShopifyOrderSync.Services
 
         private async Task<Dictionary<long, SheetOrderData>> GetExistingSheetDataAsync()
         {
-            var request = _sheetsService.Spreadsheets.Values.Get(_spreadsheetId, "Sheet1!A2:J");
+            var request = _sheetsService.Spreadsheets.Values.Get(_spreadsheetId, "Sheet1!A2:L");
             var response = await request.ExecuteAsync();
 
             var existingOrders = new Dictionary<long, SheetOrderData>();
@@ -174,10 +174,10 @@ namespace ShopifyOrderSync.Services
                         {
                             RowIndex = i + 2,
                             OrderId = orderId,
-                            CurrentStage = row.Count > 6 ? row[6]?.ToString() ?? "" : "",
-                            WhatsAppStatus = row.Count > 7 ? row[7]?.ToString() ?? "" : "",
-                            DeliveryStatus = row.Count > 8 ? row[8]?.ToString() ?? "" : "",
-                            AIAlert = row.Count > 9 ? row[9]?.ToString() ?? "" : ""
+                            CurrentStage = row.Count > 8 ? row[8]?.ToString() ?? "" : "",
+                            WhatsAppStatus = row.Count > 9 ? row[9]?.ToString() ?? "" : "",
+                            DeliveryStatus = row.Count > 10 ? row[10]?.ToString() ?? "" : "",
+                            AIAlert = row.Count > 11 ? row[11]?.ToString() ?? "" : ""
                         };
                     }
                 }
@@ -476,6 +476,20 @@ namespace ShopifyOrderSync.Services
             var trackingUrl = order.Fulfillments?.FirstOrDefault()?.TrackingUrl ?? "-";
             var bgColor = GetColor(color);
 
+            // Extract customer name
+            var customerName = order.Customer?.FirstName ?? "";
+            if (!string.IsNullOrEmpty(order.Customer?.LastName))
+            {
+                customerName += " " + order.Customer.LastName;
+            }
+            if (string.IsNullOrWhiteSpace(customerName))
+            {
+                customerName = "Guest";
+            }
+
+            // Format order date
+            var orderDate = order.CreatedAt?.ToString("yyyy-MM-dd HH:mm") ?? "-";
+
             return new Request
             {
                 AppendCells = new AppendCellsRequest
@@ -490,6 +504,8 @@ namespace ShopifyOrderSync.Services
                             [
                                 CreateCell(order.Id?.ToString() ?? "", bgColor),
                                 CreateCell(order.Name ?? "", bgColor),
+                                CreateCell(orderDate, bgColor),
+                                CreateCell(customerName, bgColor),
                                 CreateCell(order.Customer?.Phone ?? "", bgColor),
                                 CreateCell(order.ShippingAddress?.City ?? "", bgColor),
                                 CreateCell(order.FinancialStatus ?? "", bgColor),
@@ -511,6 +527,20 @@ namespace ShopifyOrderSync.Services
             var trackingUrl = order.Fulfillments?.FirstOrDefault()?.TrackingUrl ?? "-";
             var bgColor = GetColor(color);
 
+            // Extract customer name
+            var customerName = order.Customer?.FirstName ?? "";
+            if (!string.IsNullOrEmpty(order.Customer?.LastName))
+            {
+                customerName += " " + order.Customer.LastName;
+            }
+            if (string.IsNullOrWhiteSpace(customerName))
+            {
+                customerName = "Guest";
+            }
+
+            // Format order date
+            var orderDate = order.CreatedAt?.ToString("yyyy-MM-dd HH:mm") ?? "-";
+
             return
             [
                 new Request
@@ -523,7 +553,7 @@ namespace ShopifyOrderSync.Services
                             StartRowIndex = rowIndex - 1,
                             EndRowIndex = rowIndex,
                             StartColumnIndex = 0,
-                            EndColumnIndex = 10
+                            EndColumnIndex = 12
                         },
                         Fields = "*",
                         Rows =
@@ -534,6 +564,8 @@ namespace ShopifyOrderSync.Services
                                 [
                                     CreateCell(order.Id?.ToString() ?? "", bgColor),
                                     CreateCell(order.Name ?? "", bgColor),
+                                    CreateCell(orderDate, bgColor),
+                                    CreateCell(customerName, bgColor),
                                     CreateCell(order.Customer?.Phone ?? "", bgColor),
                                     CreateCell(order.ShippingAddress?.City ?? "", bgColor),
                                     CreateCell(order.FinancialStatus ?? "", bgColor),
