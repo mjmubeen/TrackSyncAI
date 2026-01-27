@@ -1,4 +1,5 @@
 ﻿using Microsoft.Win32;
+using Newtonsoft.Json;
 using ShopifyOrderSync.Services;
 using System.IO;
 using System.Text.Json;
@@ -126,7 +127,7 @@ namespace ShopifyOrderSync
                 config.ShopifyApiKey,
                 config.ShopifyPassword,
                 config.ShopifyShopDomain,
-                JsonSerializer.Serialize(config.GoogleCredentialsJson),
+                System.Text.Json.JsonSerializer.Serialize(config.GoogleCredentialsJson),
                 config.SpreadsheetId
             );
 
@@ -134,6 +135,7 @@ namespace ShopifyOrderSync
             _syncService.ProgressEvent += UpdateProgress;
 
             // Disable UI during sync
+            LoadModelButton.IsEnabled = false;
             SyncButton.IsEnabled = false;
             SyncButton.Content = "Syncing...";
             StartDatePicker.IsEnabled = false;
@@ -149,15 +151,58 @@ namespace ShopifyOrderSync
                 MessageBox.Show("Sync completed successfully!", "Success",
                     MessageBoxButton.OK, MessageBoxImage.Information);
             }
+            catch (System.Net.Http.HttpRequestException httpEx)
+            {
+                string errorMsg = $"HTTP Connection Error:\n\n{httpEx.Message}\n\n";
+
+                if (httpEx.Message.Contains("401") || httpEx.Message.Contains("Unauthorized"))
+                {
+                    errorMsg += "LIKELY CAUSE: Invalid Shopify API token or wrong shop domain.\n\n" +
+                                "Check your config.json:\n" +
+                                "- ShopifyPassword must start with 'shpat_'\n" +
+                                "- ShopifyShopDomain must be 'yourstore.myshopify.com'";
+                }
+                else if (httpEx.Message.Contains("403") || httpEx.Message.Contains("Forbidden"))
+                {
+                    errorMsg += "LIKELY CAUSE: Google Sheets permission denied.\n\n" +
+                                "Check:\n" +
+                                "- Share sheet with service account email\n" +
+                                "- Give Editor permissions\n" +
+                                "- Verify Sheet ID in config.json";
+                }
+                else if (httpEx.Message.Contains("404") || httpEx.Message.Contains("Not Found"))
+                {
+                    errorMsg += "LIKELY CAUSE: Wrong URL or resource not found.\n\n" +
+                                "Check:\n" +
+                                "- Shopify shop domain is correct\n" +
+                                "- Google Sheet ID is correct";
+                }
+                else
+                {
+                    errorMsg += "LIKELY CAUSE: Network connection issue.\n\n" +
+                                "Check:\n" +
+                                "- Internet connection working\n" +
+                                "- Firewall/antivirus not blocking\n" +
+                                "- VPN not interfering";
+                }
+
+                MessageBox.Show(errorMsg, "Connection Error",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+                Log($"HTTP ERROR: {httpEx.Message}");
+                Log($"Stack Trace: {httpEx.StackTrace}");
+            }
             catch (Exception ex)
             {
-                MessageBox.Show($"Sync failed: {ex.Message}", "Error",
+                MessageBox.Show($"Sync failed: {ex.Message}\n\nType: {ex.GetType().Name}", "Error",
                     MessageBoxButton.OK, MessageBoxImage.Error);
                 Log($"SYNC FAILED: {ex.Message}");
+                Log($"Exception Type: {ex.GetType().Name}");
+                Log($"Stack Trace: {ex.StackTrace}");
             }
             finally
             {
                 // Re-enable UI
+                LoadModelButton.IsEnabled = true;
                 SyncButton.IsEnabled = true;
                 SyncButton.Content = "Start Sync";
                 StartDatePicker.IsEnabled = true;
@@ -249,17 +294,38 @@ namespace ShopifyOrderSync
     }
     public class GoogleCredentials
     {
-        public required string type { get; set; }
-        public required string project_id { get; set; }
-        public required string private_key_id { get; set; }
-        public required string private_key { get; set; }
-        public required string client_email { get; set; }
-        public required string client_id { get; set; }
-        public required string auth_uri { get; set; }
-        public required string token_uri { get; set; }
-        public required string auth_provider_x509_cert_url { get; set; }
-        public required string client_x509_cert_url { get; set; }
-        public required string universe_domain { get; set; }
+        [JsonProperty("type")]
+        public required string Type { get; set; }
+
+        [JsonProperty("project_id")]
+        public required string ProjectId { get; set; }
+
+        [JsonProperty("private_key_id")]
+        public required string PrivateKeyId { get; set; }
+
+        [JsonProperty("private_key")]
+        public required string PrivateKey { get; set; }
+
+        [JsonProperty("client_email")]
+        public required string ClientEmail { get; set; }
+
+        [JsonProperty("client_id")]
+        public required string ClientId { get; set; }
+
+        [JsonProperty("auth_uri")]
+        public required string AuthUri { get; set; }
+
+        [JsonProperty("token_uri")]
+        public required string TokenUri { get; set; }
+
+        [JsonProperty("auth_provider_x509_cert_url")]
+        public required string AuthProviderX509CertUrl { get; set; }
+
+        [JsonProperty("client_x509_cert_url")]
+        public required string ClientX509CertUrl { get; set; }
+
+        [JsonProperty("universe_domain")]
+        public required string UniverseDomain { get; set; }
 
     }
 }

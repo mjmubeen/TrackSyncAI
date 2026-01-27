@@ -112,14 +112,27 @@ namespace ShopifyOrderSync.Services
 
                     // Construct prompt for tracking analysis
                     string prompt = $@"<|system|>
-You are a shipping tracking analyzer. Analyze the tracking information and determine the delivery status.
-Return ONLY valid JSON in this exact format: {{""status"": ""Delivered"", ""color"": ""Green""}}
+You are a courier tracking analyzer for an e-commerce business in Pakistan. Analyze tracking info and detect problems.
+Return ONLY valid JSON: {{""status"": ""Status"", ""color"": ""Color""}}
 
-Status options: Delivered, In-Transit, Stuck, Failed
-Color options: Green (Delivered), Yellow (In-Transit), Red (Stuck/Failed)
+Status options:
+- Delivered: Package successfully delivered
+- In-Transit: Moving normally through courier network
+- Stuck: No movement for 2+ days at same location
+- Failed: Delivery attempt failed
+- Return: Being returned to sender
+- Customer Not Picking Phone: Courier cannot contact customer
+
+Color codes:
+- Green: Delivered
+- Yellow: In-Transit (normal)
+- Orange: Stuck (warning - needs follow-up)
+- Red: Failed, Return, or Customer not reachable (urgent action needed)
+
+Look for keywords like: delivered, out for delivery, in transit, attempted delivery, returned, customer unreachable, contact failed, stuck, delay
 <|end|>
 <|user|>
-Analyze this tracking information:
+Analyze this courier tracking information:
 
 {cleanedText}
 
@@ -135,8 +148,6 @@ Return JSON with status and color.<|end|>
 
                     // Use InferAsync for async operation
                     string response = "";
-                    if (_executor == null)
-                        throw new InvalidOperationException("Executor is not initialized.");
                     await foreach (var token in _executor.InferAsync(prompt, inferenceParams))
                     {
                         response += token;

@@ -18,8 +18,8 @@ namespace ShopifyOrderSync.Services
         private readonly HttpClient _httpClient;
         private readonly LocalAIService _aiService;
 
-        public event Action<string> LogEvent;
-        public event Action<int> ProgressEvent;
+        public event Action<string>? LogEvent;
+        public event Action<int>? ProgressEvent;
 
         public OrderSyncService(
             string shopifyApiKey,
@@ -82,7 +82,7 @@ namespace ShopifyOrderSync.Services
                     var scenario = DetermineScenario(order, existingOrders);
                     var updates = await ProcessScenarioAsync(order, scenario, existingOrders);
 
-                    if (updates != null)
+                    if (updates != null && updates.Count > 0)
                     {
                         batchUpdates.AddRange(updates);
                     }
@@ -123,12 +123,12 @@ namespace ShopifyOrderSync.Services
             };
 
             var orders = await service.ListAsync(filter);
-            return orders.Items.ToList();
+            return [.. orders.Items];
         }
 
         private async Task<Dictionary<long, SheetOrderData>> GetExistingSheetDataAsync()
         {
-            var request = _sheetsService.Spreadsheets.Values.Get(_spreadsheetId, "Sheet1!A2:F");
+            var request = _sheetsService.Spreadsheets.Values.Get(_spreadsheetId, "Sheet1!A2:J");
             var response = await request.ExecuteAsync();
 
             var existingOrders = new Dictionary<long, SheetOrderData>();
@@ -142,9 +142,12 @@ namespace ShopifyOrderSync.Services
                     {
                         existingOrders[orderId] = new SheetOrderData
                         {
-                            RowIndex = i + 2, // +2 because header is row 1, data starts at row 2
+                            RowIndex = i + 2,
                             OrderId = orderId,
-                            Status = row.Count > 3 ? row[3].ToString() : ""
+                            CurrentStage = row.Count > 6 ? row[6]?.ToString() ?? "" : "",
+                            WhatsAppStatus = row.Count > 7 ? row[7]?.ToString() ?? "" : "",
+                            DeliveryStatus = row.Count > 8 ? row[8]?.ToString() ?? "" : "",
+                            AIAlert = row.Count > 9 ? row[9]?.ToString() ?? "" : ""
                         };
                     }
                 }
@@ -153,45 +156,79 @@ namespace ShopifyOrderSync.Services
             return existingOrders;
         }
 
-        private OrderScenario DetermineScenario(Order order, Dictionary<long, SheetOrderData> existingOrders)
+        private static OrderScenario DetermineScenario(Order order, Dictionary<long, SheetOrderData> existingOrders)
         {
-            bool existsInSheet = existingOrders.ContainsKey(order.Id.Value);
+            var id = order.Id ?? 0;
+            bool existsInSheet = existingOrders.ContainsKey(id);
+            var tags = order.Tags ?? "";
 
-            // Scenario B: Cancelled
-            if (order.CancelledAt.HasValue)
+            // Cancelled orders
+            if (order.CancelledAt.HasValue || tags.Contains("Cancelled"))
             {
                 return OrderScenario.Cancelled;
             }
 
-            // Scenario A: New order
+            // New order - just placed
             if (!existsInSheet)
             {
-                return OrderScenario.New;
+                return OrderScenario.NewOrder;
             }
 
-            var sheetData = existingOrders[order.Id.Value];
+            var sheetData = existingOrders[id];
 
-            // Scenario C: Skip if already delivered
-            if (sheetData.Status.Equals("Delivered", StringComparison.OrdinalIgnoreCase))
+            // Stage 1: WhatsApp Confirmation
+            if (tags.Contains("WhatsApp Sent") && !tags.Contains("Confirmed") && !tags.Contains("Did not pick up"))
             {
-                return OrderScenario.Skip;
+                return OrderScenario.AwaitingWhatsAppConfirm;
             }
 
-            // Scenario D: Analyze tracking
+            if (tags.Contains("Invalid WhatsApp"))
+            {
+                return OrderScenario.InvalidWhatsApp;
+            }
+
+            // Stage 2: Phone Verification
+            if (tags.Contains("WhatsApp Confirmed") || tags.Contains("Awaiting Call"))
+            {
+                return OrderScenario.AwaitingPhoneCall;
+            }
+
+            if (tags.Contains("Did not pick up") || tags.Contains("No Answer"))
+            {
+                return OrderScenario.CustomerNotPickingPhone;
+            }
+
+            if (tags.Contains("Call Completed") && !tags.Contains("Size Confirmed"))
+            {
+                return OrderScenario.AwaitingSizeConfirmation;
+            }
+
+            // Stage 3: Ready for Courier
+            if (tags.Contains("Size Confirmed") && order.FulfillmentStatus == "unfulfilled")
+            {
+                return OrderScenario.ReadyForCourier;
+            }
+
+            // Stage 4: Fulfilled - Track Delivery
             if (order.FulfillmentStatus == "fulfilled" && order.Fulfillments?.Any() == true)
             {
-                return OrderScenario.Analyze;
+                // Skip if already delivered
+                if (sheetData.DeliveryStatus.Equals("Delivered", StringComparison.OrdinalIgnoreCase))
+                {
+                    return OrderScenario.AlreadyDelivered;
+                }
+
+                return OrderScenario.TrackParcel;
             }
 
-            // Scenario E: Stale unfulfilled
-            if (order.FulfillmentStatus == "unfulfilled" &&
-                order.CreatedAt.HasValue &&
-                (DateTime.UtcNow - order.CreatedAt.Value).TotalDays > 3)
+            // Stale orders (no progress in 24 hours)
+            if (order.CreatedAt.HasValue && (DateTime.UtcNow - order.CreatedAt.Value).TotalHours > 24
+                && order.FulfillmentStatus == "unfulfilled" && !tags.Contains("Size Confirmed"))
             {
-                return OrderScenario.Stale;
+                return OrderScenario.StaleOrder;
             }
 
-            return OrderScenario.Update;
+            return OrderScenario.UpdateOnly;
         }
 
         private async Task<List<Request>> ProcessScenarioAsync(
@@ -200,46 +237,146 @@ namespace ShopifyOrderSync.Services
             Dictionary<long, SheetOrderData> existingOrders)
         {
             var requests = new List<Request>();
+            var id = order.Id ?? 0;
 
             switch (scenario)
             {
-                case OrderScenario.New:
-                    Log($"  → Scenario A: New order - Appending to sheet");
-                    requests.Add(CreateAppendRowRequest(order));
+                case OrderScenario.NewOrder:
+                    Log($"  → NEW ORDER: WhatsApp message sent");
+                    requests.Add(CreateAppendRowRequest(order,
+                        stage: "WhatsApp Sent",
+                        whatsappStatus: "Pending",
+                        deliveryStatus: "-",
+                        aiAlert: "",
+                        color: "LightBlue"));
                     break;
 
-                case OrderScenario.Cancelled:
-                    Log($"  → Scenario B: Cancelled - Marking as cancelled");
-                    if (existingOrders.ContainsKey(order.Id.Value))
+                case OrderScenario.AwaitingWhatsAppConfirm:
+                    Log($"  → Awaiting WhatsApp confirmation");
+                    if (existingOrders.TryGetValue(id, out SheetOrderData? value1))
                     {
-                        int rowIndex = existingOrders[order.Id.Value].RowIndex;
-                        requests.AddRange(CreateUpdateRequest(rowIndex, "Cancelled", "Grey"));
+                        requests.AddRange(CreateFullRowUpdate(value1.RowIndex, order,
+                            stage: "Awaiting WhatsApp",
+                            whatsappStatus: "Sent - No Response",
+                            deliveryStatus: "-",
+                            aiAlert: GetTimeBasedAlert(order, "WhatsApp not confirmed in"),
+                            color: "Yellow"));
                     }
                     break;
 
-                case OrderScenario.Skip:
-                    Log($"  → Scenario C: Already delivered - Skipping");
+                case OrderScenario.InvalidWhatsApp:
+                    Log($"  → Invalid WhatsApp number - ALERT");
+                    if (existingOrders.TryGetValue(id, out SheetOrderData? value2))
+                    {
+                        requests.AddRange(CreateFullRowUpdate(value2.RowIndex, order,
+                            stage: "Invalid Contact",
+                            whatsappStatus: "Invalid Number",
+                            deliveryStatus: "-",
+                            aiAlert: "⚠️ URGENT: Invalid WhatsApp - Manual contact needed",
+                            color: "Red"));
+                    }
                     break;
 
-                case OrderScenario.Analyze:
-                    Log($"  → Scenario D: Analyzing tracking status...");
-                    var trackingUrl = order.Fulfillments.FirstOrDefault()?.TrackingUrl;
+                case OrderScenario.AwaitingPhoneCall:
+                    Log($"  → Ready for phone verification call");
+                    if (existingOrders.TryGetValue(id, out SheetOrderData? value3))
+                    {
+                        requests.AddRange(CreateFullRowUpdate(value3.RowIndex, order,
+                            stage: "Phone Verification",
+                            whatsappStatus: "Confirmed",
+                            deliveryStatus: "-",
+                            aiAlert: "📞 Ready for call - Verify address & size",
+                            color: "LightGreen"));
+                    }
+                    break;
+
+                case OrderScenario.CustomerNotPickingPhone:
+                    Log($"  → Customer not picking phone - ALERT");
+                    if (existingOrders.TryGetValue(id, out SheetOrderData? value4))
+                    {
+                        requests.AddRange(CreateFullRowUpdate(value4.RowIndex, order,
+                            stage: "Call Failed",
+                            whatsappStatus: "Confirmed",
+                            deliveryStatus: "-",
+                            aiAlert: "⚠️ Customer not answering - Retry needed",
+                            color: "Orange"));
+                    }
+                    break;
+
+                case OrderScenario.AwaitingSizeConfirmation:
+                    Log($"  → Call completed - awaiting size confirmation");
+                    if (existingOrders.TryGetValue(id, out SheetOrderData? value5))
+                    {
+                        requests.AddRange(CreateFullRowUpdate(value5.RowIndex, order,
+                            stage: "Size Confirmation",
+                            whatsappStatus: "Confirmed",
+                            deliveryStatus: "-",
+                            aiAlert: "👟 Update shoe size in system",
+                            color: "LightYellow"));
+                    }
+                    break;
+
+                case OrderScenario.ReadyForCourier:
+                    Log($"  → Ready for courier - Add to shipping");
+                    if (existingOrders.TryGetValue(id, out SheetOrderData? value6))
+                    {
+                        requests.AddRange(CreateFullRowUpdate(value6.RowIndex, order,
+                            stage: "Ready for Courier",
+                            whatsappStatus: "Confirmed",
+                            deliveryStatus: "Pending Pickup",
+                            aiAlert: "📦 Add to courier system",
+                            color: "Purple"));
+                    }
+                    break;
+
+                case OrderScenario.TrackParcel:
+                    Log($"  → Tracking parcel delivery with AI...");
+                    var trackingUrl = order.Fulfillments?.FirstOrDefault()?.TrackingUrl;
 
                     if (!string.IsNullOrEmpty(trackingUrl))
                     {
                         var analysisResult = await AnalyzeTrackingAsync(trackingUrl);
-                        int rowIndex = existingOrders[order.Id.Value].RowIndex;
-                        requests.AddRange(CreateUpdateRequest(rowIndex, analysisResult.Status, analysisResult.Color));
-                        Log($"  → AI Analysis: {analysisResult.Status} ({analysisResult.Color})");
+                        var aiAlert = GenerateAIAlert(analysisResult, order);
+
+                        requests.AddRange(CreateFullRowUpdate(existingOrders[id].RowIndex, order,
+                            stage: "In Transit",
+                            whatsappStatus: "Confirmed",
+                            deliveryStatus: analysisResult.Status,
+                            aiAlert: aiAlert,
+                            color: analysisResult.Color));
+
+                        Log($"  → AI Analysis: {analysisResult.Status} - {aiAlert}");
                     }
                     break;
 
-                case OrderScenario.Stale:
-                    Log($"  → Scenario E: Stale unfulfilled - Highlighting orange");
-                    if (existingOrders.ContainsKey(order.Id.Value))
+                case OrderScenario.AlreadyDelivered:
+                    Log($"  → Already delivered - Skipping");
+                    break;
+
+                case OrderScenario.StaleOrder:
+                    Log($"  → STALE ORDER - No progress in 24h");
+                    if (existingOrders.TryGetValue(id, out SheetOrderData? value7))
                     {
-                        int rowIndex = existingOrders[order.Id.Value].RowIndex;
-                        requests.AddRange(CreateUpdateRequest(rowIndex, "Unfulfilled - Stale", "Orange"));
+                        var currentStage = value7.CurrentStage;
+                        requests.AddRange(CreateFullRowUpdate(value7.RowIndex, order,
+                            stage: currentStage + " (STALE)",
+                            whatsappStatus: value7.WhatsAppStatus,
+                            deliveryStatus: value7.DeliveryStatus,
+                            aiAlert: "⚠️ URGENT: Order stuck for 24+ hours - Investigate immediately",
+                            color: "DarkRed"));
+                    }
+                    break;
+
+                case OrderScenario.Cancelled:
+                    Log($"  → Order cancelled");
+                    if (existingOrders.TryGetValue(id, out SheetOrderData? value8))
+                    {
+                        requests.AddRange(CreateFullRowUpdate(value8.RowIndex, order,
+                            stage: "Cancelled",
+                            whatsappStatus: value8.WhatsAppStatus,
+                            deliveryStatus: "Cancelled",
+                            aiAlert: "",
+                            color: "Grey"));
                     }
                     break;
             }
@@ -264,16 +401,50 @@ namespace ShopifyOrderSync.Services
                 Log($"    Error analyzing tracking: {ex.Message}");
                 return new TrackingAnalysisResult
                 {
-                    Status = "Analysis Failed",
+                    Status = "Tracking Error",
                     Color = "Red",
-                    ErrorMessage = ""
+                    ErrorMessage = ex.Message
                 };
             }
         }
 
-        private Request CreateAppendRowRequest(Order order)
+        private static string GenerateAIAlert(TrackingAnalysisResult analysis, Order order)
         {
-            var trackingUrl = order.Fulfillments?.FirstOrDefault()?.TrackingUrl ?? "";
+            var orderAge = order.CreatedAt.HasValue
+                ? (DateTime.UtcNow - order.CreatedAt.Value).TotalDays
+                : 0;
+
+            return analysis.Status.ToLower() switch
+            {
+                "delivered" => "✅ Delivered successfully",
+                "in-transit" or "in transit" => orderAge > 5
+                    ? "⚠️ In transit > 5 days - Follow up with courier"
+                    : "🚚 On the way",
+                "stuck" => "🚨 URGENT: Parcel stuck - Contact courier immediately",
+                "failed" => "🚨 CRITICAL: Delivery failed - Call customer NOW",
+                "return" or "returned" => "⚠️ Parcel returned - Verify customer address",
+                "customer not picking phone" => "📞 Courier can't reach customer - Call them",
+                _ => $"ℹ️ Status: {analysis.Status}"
+            };
+        }
+
+        private static string GetTimeBasedAlert(Order order, string message)
+        {
+            if (!order.CreatedAt.HasValue) return "";
+
+            var hours = (DateTime.UtcNow - order.CreatedAt.Value).TotalHours;
+
+            if (hours < 2) return "";
+            if (hours < 6) return $"⏰ {message} {hours:F0} hours";
+            if (hours < 24) return $"⚠️ {message} {hours:F0} hours - Follow up needed";
+            return $"🚨 URGENT: {message} {hours / 24:F0} days";
+        }
+
+        private static Request CreateAppendRowRequest(Order order, string stage, string whatsappStatus,
+            string deliveryStatus, string aiAlert, string color)
+        {
+            var trackingUrl = order.Fulfillments?.FirstOrDefault()?.TrackingUrl ?? "-";
+            var bgColor = GetColor(color);
 
             return new Request
             {
@@ -281,32 +452,37 @@ namespace ShopifyOrderSync.Services
                 {
                     SheetId = 0,
                     Fields = "*",
-                    Rows = new List<RowData>
-                    {
-                        new RowData
+                    Rows =
+                    [
+                        new()
                         {
-                            Values = new List<CellData>
-                            {
-                                new CellData { UserEnteredValue = new ExtendedValue { NumberValue = order.Id } },
-                                new CellData { UserEnteredValue = new ExtendedValue { StringValue = order.Name } },
-                                new CellData { UserEnteredValue = new ExtendedValue { StringValue = order.FinancialStatus } },
-                                new CellData { UserEnteredValue = new ExtendedValue { StringValue = order.FulfillmentStatus ?? "unfulfilled" } },
-                                new CellData { UserEnteredValue = new ExtendedValue { StringValue = trackingUrl } },
-                                new CellData { UserEnteredValue = new ExtendedValue { StringValue = "New" } }
-                            }
+                            Values =
+                            [
+                                CreateCell(order.Id?.ToString() ?? "", bgColor),
+                                CreateCell(order.Name ?? "", bgColor),
+                                CreateCell(order.Customer?.Phone ?? "", bgColor),
+                                CreateCell(order.ShippingAddress?.City ?? "", bgColor),
+                                CreateCell(order.FinancialStatus ?? "", bgColor),
+                                CreateCell(trackingUrl, bgColor),
+                                CreateCell(stage, bgColor),
+                                CreateCell(whatsappStatus, bgColor),
+                                CreateCell(deliveryStatus, bgColor),
+                                CreateCell(aiAlert, bgColor)
+                            ]
                         }
-                    }
+                    ]
                 }
             };
         }
 
-        private List<Request> CreateUpdateRequest(int rowIndex, string status, string colorName)
+        private static List<Request> CreateFullRowUpdate(int rowIndex, Order order, string stage,
+            string whatsappStatus, string deliveryStatus, string aiAlert, string color)
         {
-            var color = GetColor(colorName);
+            var trackingUrl = order.Fulfillments?.FirstOrDefault()?.TrackingUrl ?? "-";
+            var bgColor = GetColor(color);
 
-            return new List<Request>
-            {
-                // Update status text
+            return
+            [
                 new Request
                 {
                     UpdateCells = new UpdateCellsRequest
@@ -316,56 +492,56 @@ namespace ShopifyOrderSync.Services
                             SheetId = 0,
                             StartRowIndex = rowIndex - 1,
                             EndRowIndex = rowIndex,
-                            StartColumnIndex = 5,
-                            EndColumnIndex = 6
+                            StartColumnIndex = 0,
+                            EndColumnIndex = 10
                         },
-                        Fields = "userEnteredValue",
-                        Rows = new List<RowData>
-                        {
+                        Fields = "*",
+                        Rows =
+                        [
                             new RowData
                             {
-                                Values = new List<CellData>
-                                {
-                                    new CellData { UserEnteredValue = new ExtendedValue { StringValue = status } }
-                                }
+                                Values =
+                                [
+                                    CreateCell(order.Id?.ToString() ?? "", bgColor),
+                                    CreateCell(order.Name ?? "", bgColor),
+                                    CreateCell(order.Customer?.Phone ?? "", bgColor),
+                                    CreateCell(order.ShippingAddress?.City ?? "", bgColor),
+                                    CreateCell(order.FinancialStatus ?? "", bgColor),
+                                    CreateCell(trackingUrl, bgColor),
+                                    CreateCell(stage, bgColor),
+                                    CreateCell(whatsappStatus, bgColor),
+                                    CreateCell(deliveryStatus, bgColor),
+                                    CreateCell(aiAlert, bgColor)
+                                ]
                             }
-                        }
-                    }
-                },
-                // Update background color
-                new Request
-                {
-                    RepeatCell = new RepeatCellRequest
-                    {
-                        Range = new GridRange
-                        {
-                            SheetId = 0,
-                            StartRowIndex = rowIndex - 1,
-                            EndRowIndex = rowIndex,
-                            StartColumnIndex = 0,
-                            EndColumnIndex = 6
-                        },
-                        Cell = new CellData
-                        {
-                            UserEnteredFormat = new CellFormat
-                            {
-                                BackgroundColor = color
-                            }
-                        },
-                        Fields = "userEnteredFormat.backgroundColor"
+                        ]
                     }
                 }
+            ];
+        }
+
+        private static CellData CreateCell(string value, Color bgColor)
+        {
+            return new CellData
+            {
+                UserEnteredValue = new ExtendedValue { StringValue = value },
+                UserEnteredFormat = new CellFormat { BackgroundColor = bgColor }
             };
         }
 
-        private Color GetColor(string colorName)
+        private static Color GetColor(string colorName)
         {
             return colorName.ToLower() switch
             {
-                "green" => new Color { Red = 0.7f, Green = 0.9f, Blue = 0.7f },
+                "lightblue" => new Color { Red = 0.8f, Green = 0.9f, Blue = 1f },
+                "lightgreen" => new Color { Red = 0.85f, Green = 0.95f, Blue = 0.85f },
+                "lightyellow" => new Color { Red = 1f, Green = 1f, Blue = 0.85f },
                 "yellow" => new Color { Red = 1f, Green = 1f, Blue = 0.7f },
-                "red" => new Color { Red = 0.95f, Green = 0.7f, Blue = 0.7f },
                 "orange" => new Color { Red = 1f, Green = 0.85f, Blue = 0.6f },
+                "purple" => new Color { Red = 0.9f, Green = 0.8f, Blue = 1f },
+                "green" => new Color { Red = 0.7f, Green = 0.9f, Blue = 0.7f },
+                "red" => new Color { Red = 0.95f, Green = 0.7f, Blue = 0.7f },
+                "darkred" => new Color { Red = 0.8f, Green = 0.4f, Blue = 0.4f },
                 "grey" => new Color { Red = 0.85f, Green = 0.85f, Blue = 0.85f },
                 _ => new Color { Red = 1f, Green = 1f, Blue = 1f }
             };
@@ -392,18 +568,27 @@ namespace ShopifyOrderSync.Services
 
     public enum OrderScenario
     {
-        New,
+        NewOrder,
+        AwaitingWhatsAppConfirm,
+        InvalidWhatsApp,
+        AwaitingPhoneCall,
+        CustomerNotPickingPhone,
+        AwaitingSizeConfirmation,
+        ReadyForCourier,
+        TrackParcel,
+        AlreadyDelivered,
+        StaleOrder,
         Cancelled,
-        Skip,
-        Analyze,
-        Stale,
-        Update
+        UpdateOnly
     }
 
     public class SheetOrderData
     {
         public int RowIndex { get; set; }
         public long OrderId { get; set; }
-        public string Status { get; set; }
+        public string CurrentStage { get; set; } = string.Empty;
+        public string WhatsAppStatus { get; set; } = string.Empty;
+        public string DeliveryStatus { get; set; } = string.Empty;
+        public string AIAlert { get; set; } = string.Empty;
     }
 }
