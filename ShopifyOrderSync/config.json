@@ -21,7 +21,14 @@
       "Name": "FastEx",
       "DetectionUrl": "fastex.pk",
       "ApiEndpoint": "https://careconnectapi.daewoo.net.pk:4432/api/Tracking/GetTrackingDetailsFastExByCN?ConsignmentId={id}",
-      "QueryParameters": [ "trackingNo", "ConsignmentId", "id", "cn" ],
+      "QueryParameters": ["trackingNo"],
+      "Enabled": true
+    },
+    {
+      "Name": "CallCourier",
+      "DetectionUrl": "callcourier.com.pk",
+      "ApiEndpoint": "http://cod.callcourier.com.pk/api/CallCourier/GetTackingHistory?cn={id}",
+      "QueryParameters": ["tc"],
       "Enabled": true
     }
   ]
