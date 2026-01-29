@@ -16,4 +16,13 @@
     "universe_domain": "googleapis.com"
   },
   "SpreadsheetId": "your_google_sheet_id_here"
+  "CourierAPIs": [
+    {
+      "Name": "FastEx",
+      "DetectionUrl": "fastex.pk",
+      "ApiEndpoint": "https://careconnectapi.daewoo.net.pk:4432/api/Tracking/GetTrackingDetailsFastExByCN?ConsignmentId={id}",
+      "QueryParameters": [ "trackingNo", "ConsignmentId", "id", "cn" ],
+      "Enabled": true
+    }
+  ]
 }

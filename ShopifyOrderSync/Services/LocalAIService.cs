@@ -2,6 +2,7 @@
 using LLama.Common;
 using LLama.Sampling;
 using Newtonsoft.Json;
+using ShopifyOrderSync.Models;
 
 namespace ShopifyOrderSync.Services
 {
@@ -151,7 +152,7 @@ Return JSON with status and color.<|end|>
 
                     var inferenceParams = new InferenceParams
                     {
-                        SamplingPipeline = new DefaultSamplingPipeline() { Temperature = 0.7f, Seed = 1337 },
+                        SamplingPipeline = new DefaultSamplingPipeline() { Temperature = 0.3f, Seed = 1337 },
                         AntiPrompts = ["<|end|>", "<|user|>"],
                         MaxTokens = 150
                     };
@@ -269,20 +270,5 @@ Return JSON with status and color.<|end|>
             GC.WaitForPendingFinalizers();
             GC.Collect();
         }
-    }
-
-    /// <summary>
-    /// Result of AI tracking analysis
-    /// </summary>
-    public class TrackingAnalysisResult
-    {
-        [JsonProperty("status")]
-        public required string Status { get; set; }
-
-        [JsonProperty("color")]
-        public required string Color { get; set; }
-
-        [JsonProperty("error")]
-        public required string ErrorMessage { get; set; }
     }
 }

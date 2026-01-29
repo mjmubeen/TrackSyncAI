@@ -2,6 +2,8 @@
 using Google.Apis.Services;
 using Google.Apis.Sheets.v4;
 using Google.Apis.Sheets.v4.Data;
+using ShopifyOrderSync.Enums;
+using ShopifyOrderSync.Models;
 using ShopifySharp;
 using ShopifySharp.Filters;
 using System.Net.Http;
@@ -17,6 +19,7 @@ namespace ShopifyOrderSync.Services
         private readonly SheetsService _sheetsService;
         private readonly HttpClient _httpClient;
         private readonly LocalAIService _aiService;
+        private readonly List<CourierApiConfig> _courierAPIs;
 
         public event Action<string>? LogEvent;
         public event Action<int>? ProgressEvent;
@@ -26,7 +29,8 @@ namespace ShopifyOrderSync.Services
             string shopifyPassword,
             string shopifyShopDomain,
             string googleCredentialsJson,
-            string spreadsheetId)
+            string spreadsheetId,
+            List<CourierApiConfig> courierAPIs)
         {
             _shopifyApiKey = shopifyApiKey;
             _shopifyPassword = shopifyPassword;
@@ -34,6 +38,7 @@ namespace ShopifyOrderSync.Services
             _spreadsheetId = spreadsheetId;
             _httpClient = new HttpClient();
             _aiService = LocalAIService.Instance;
+            _courierAPIs = courierAPIs ?? [];
 
             // Initialize Google Sheets
             var credential = GoogleCredential.FromJson(googleCredentialsJson)
@@ -418,11 +423,36 @@ namespace ShopifyOrderSync.Services
         {
             try
             {
-                Log($"    Downloading tracking page: {trackingUrl}");
-                var htmlContent = await _httpClient.GetStringAsync(trackingUrl);
+                Log($"    Downloading tracking data: {trackingUrl}");
 
-                Log($"    Analyzing with AI model...");
+                // Try to use courier-specific API
+                var htmlContent = await GetTrackingContentAsync(trackingUrl);
+
+                if (string.IsNullOrWhiteSpace(htmlContent))
+                {
+                    Log($"    ⚠️ Warning: Empty response from tracking URL");
+                    return new TrackingAnalysisResult
+                    {
+                        Status = "Tracking Unavailable",
+                        Color = "Orange",
+                        ErrorMessage = "Empty response from courier"
+                    };
+                }
+
+                Log($"    Analyzing with AI model... (Content size: {htmlContent.Length} chars)");
                 var result = await _aiService.AnalyzeTrackingAsync(htmlContent);
+
+                // Check if AI returned empty or invalid result
+                if (string.IsNullOrWhiteSpace(result.Status) || result.Status == "Error")
+                {
+                    Log($"    ⚠️ AI analysis failed or returned empty result");
+                    return new TrackingAnalysisResult
+                    {
+                        Status = "Analysis Failed",
+                        Color = "Orange",
+                        ErrorMessage = result.ErrorMessage ?? "AI returned empty response"
+                    };
+                }
 
                 return result;
             }
@@ -435,6 +465,93 @@ namespace ShopifyOrderSync.Services
                     Color = "Red",
                     ErrorMessage = ex.Message
                 };
+            }
+        }
+
+        private async Task<string> GetTrackingContentAsync(string trackingUrl)
+        {
+            // Check if any courier API matches
+            foreach (var courierApi in _courierAPIs.Where(c => c.Enabled))
+            {
+                if (trackingUrl.Contains(courierApi.DetectionUrl, StringComparison.OrdinalIgnoreCase))
+                {
+                    try
+                    {
+                        Log($"    → Detected {courierApi.Name} - Using API endpoint");
+
+                        // Extract tracking ID from URL
+                        var trackingId = ExtractTrackingId(trackingUrl, courierApi.QueryParameters);
+
+                        if (!string.IsNullOrEmpty(trackingId))
+                        {
+                            // Replace {id} placeholder in API endpoint
+                            string apiUrl = courierApi.ApiEndpoint.Replace("{id}", trackingId);
+                            Log($"    → API URL: {apiUrl}");
+
+                            var content = await _httpClient.GetStringAsync(apiUrl);
+
+                            if (!string.IsNullOrWhiteSpace(content))
+                            {
+                                Log($"    ✓ Got API response ({content.Length} chars)");
+                                return content;
+                            }
+                        }
+
+                        Log($"    ⚠️ Could not extract tracking ID, falling back to direct URL");
+                    }
+                    catch (Exception ex)
+                    {
+                        Log($"    ⚠️ API call failed: {ex.Message}, trying direct URL");
+                    }
+
+                    // Break after first match to avoid multiple attempts
+                    break;
+                }
+            }
+
+            // Fallback: Regular HTML scraping
+            Log($"    → Using direct URL scraping");
+            return await _httpClient.GetStringAsync(trackingUrl);
+        }
+
+        private string? ExtractTrackingId(string trackingUrl, List<string> possibleParameters)
+        {
+            try
+            {
+                var uri = new Uri(trackingUrl);
+
+                // Try query string parameters
+                var query = System.Web.HttpUtility.ParseQueryString(uri.Query);
+
+                foreach (var param in possibleParameters)
+                {
+                    var value = query[param];
+                    if (!string.IsNullOrWhiteSpace(value))
+                    {
+                        Log($"    → Extracted ID from parameter '{param}': {value}");
+                        return value;
+                    }
+                }
+
+                // Try path segments (e.g., /track/12345678)
+                var segments = uri.Segments;
+                if (segments.Length > 0)
+                {
+                    var lastSegment = segments[^1].Trim('/');
+                    if (!string.IsNullOrWhiteSpace(lastSegment) && lastSegment.Length > 5)
+                    {
+                        Log($"    → Extracted ID from path: {lastSegment}");
+                        return lastSegment;
+                    }
+                }
+
+                Log($"    ⚠️ Could not extract tracking ID from URL");
+                return null;
+            }
+            catch (Exception ex)
+            {
+                Log($"    ⚠️ Error extracting tracking ID: {ex.Message}");
+                return null;
             }
         }
 
@@ -626,31 +743,5 @@ namespace ShopifyOrderSync.Services
         {
             LogEvent?.Invoke(message);
         }
-    }
-
-    public enum OrderScenario
-    {
-        NewOrder,
-        AwaitingWhatsAppConfirm,
-        InvalidWhatsApp,
-        AwaitingPhoneCall,
-        CustomerNotPickingPhone,
-        AwaitingSizeConfirmation,
-        ReadyForCourier,
-        TrackParcel,
-        AlreadyDelivered,
-        StaleOrder,
-        Cancelled,
-        UpdateOnly
-    }
-
-    public class SheetOrderData
-    {
-        public int RowIndex { get; set; }
-        public long OrderId { get; set; }
-        public string CurrentStage { get; set; } = string.Empty;
-        public string WhatsAppStatus { get; set; } = string.Empty;
-        public string DeliveryStatus { get; set; } = string.Empty;
-        public string AIAlert { get; set; } = string.Empty;
     }
 }
