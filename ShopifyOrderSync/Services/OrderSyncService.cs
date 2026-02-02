@@ -439,13 +439,16 @@ namespace ShopifyOrderSync.Services
                     };
                 }
 
-                Log($"    Analyzing with AI model... (Content size: {htmlContent.Length} chars)");
+                Log($"    → Raw content size: {htmlContent.Length} chars");
+
+                // AI analysis
                 var result = await _aiService.AnalyzeTrackingAsync(htmlContent);
 
                 // Check if AI returned empty or invalid result
                 if (string.IsNullOrWhiteSpace(result.Status) || result.Status == "Error")
                 {
                     Log($"    ⚠️ AI analysis failed or returned empty result");
+                    Log($"    → Status: '{result.Status}', Color: '{result.Color}'");
                     return new TrackingAnalysisResult
                     {
                         Status = "Analysis Failed",
@@ -454,6 +457,12 @@ namespace ShopifyOrderSync.Services
                     };
                 }
 
+                if (!string.IsNullOrWhiteSpace(result.ErrorMessage))
+                {
+                    Log($"    ⚠️ AI analysis failed ErrorMessage='{result.ErrorMessage}'");
+                }
+
+                Log($"    ✓ AI Result: Status='{result.Status}', Color='{result.Color}'");
                 return result;
             }
             catch (Exception ex)
@@ -603,7 +612,24 @@ namespace ShopifyOrderSync.Services
             {
                 customerName = "Guest";
             }
-
+            var phone = order.Customer?.Phone ?? "";
+            if (string.IsNullOrWhiteSpace(phone))
+            {
+                var noteAttribute = order.NoteAttributes.FirstOrDefault(x=> x.Name == "Phone");
+                if (noteAttribute != null)
+                {
+                    phone = noteAttribute.Value?.ToString() ?? "";
+                }
+                else
+                {
+                    var billingPhone = order.BillingAddress.Phone;
+                    if (!string.IsNullOrEmpty(billingPhone))
+                    {
+                        phone = billingPhone;
+                    }
+                }
+                    
+            }
             // Format order date
             var orderDate = order.CreatedAt?.ToString("yyyy-MM-dd HH:mm") ?? "-";
 
@@ -623,7 +649,7 @@ namespace ShopifyOrderSync.Services
                                 CreateCell(order.Name ?? "", bgColor),
                                 CreateCell(orderDate, bgColor),
                                 CreateCell(customerName, bgColor),
-                                CreateCell(order.Customer?.Phone ?? "", bgColor),
+                                CreateCell(phone, bgColor),
                                 CreateCell(order.ShippingAddress?.City ?? "", bgColor),
                                 CreateCell(order.FinancialStatus ?? "", bgColor),
                                 CreateCell(trackingUrl, bgColor),
